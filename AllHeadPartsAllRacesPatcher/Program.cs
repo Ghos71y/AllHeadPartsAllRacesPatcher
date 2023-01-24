@@ -7,7 +7,10 @@ namespace AllHeadPartsAllRacesPatcher
 {
     public class ProgramSettings
     {
+        public bool enableAllHeadPartsAllRaces;
         public bool includeBeastRaces;
+        public bool makeHeadPartsPlayable;
+        public bool makeHeadPartsGenderless;
     }
     public class Program
     {
@@ -25,75 +28,134 @@ namespace AllHeadPartsAllRacesPatcher
         }
         public static void RunPatch(IPatcherState<ISkyrimMod, ISkyrimModGetter> state)
         {
-            Console.WriteLine("\nSetting: \"BEAST RACES INCLUDED IN PATCH\" = " + Settings.Value.includeBeastRaces.ToString().ToUpper() + "\n");
+            Console.WriteLine("\nSetting: \"ALL HEADPARTS FOR ALL RACES ENABLED\" = " + Settings.Value.enableAllHeadPartsAllRaces.ToString().ToUpper());
+            Console.WriteLine("\nSetting: \"ALL HEADPARTS PLAYABLE ENABLED\" = " + Settings.Value.makeHeadPartsPlayable.ToString().ToUpper());
+            Console.WriteLine("\nSetting: \"ALL HEADPARTS GENDERLESS ENABLED\" = " + Settings.Value.makeHeadPartsGenderless.ToString().ToUpper());
+            Console.WriteLine("\nSetting: \"BEAST RACES INCLUDED IN PATCH\" = " + Settings.Value.includeBeastRaces.ToString().ToUpper());
 
-            // create formList to hold all the races that will share headparts
-            var newFormlist = state.PatchMod.FormLists.AddNew();
-            newFormlist.EditorID = "synthesisHeadPartsAllRaces";
-
-            //FormKey list of beastRaces (for toggling whether or not to include beast races)
-            List<FormKey> beastRaces = new() { FormKey.Factory("013740:Skyrim.esm"), FormKey.Factory("013745:Skyrim.esm"), FormKey.Factory("08883A:Skyrim.esm"), FormKey.Factory("088845:Skyrim.esm") };
-
-            List<FormKey> playableRaces = new();
-
-            //list of winningoverride race records to only query them once
+            //list of winningoverride records to only query them once
             var raceList = state.LoadOrder.PriorityOrder.Race().WinningOverrides().ToList();
+            var headpartsList = state.LoadOrder.PriorityOrder.HeadPart().WinningOverrides().ToList();
 
+            //child races
+            FormKey childHeadParts = FormKey.Factory("0A803C:Skyrim.esm");
 
-            foreach (var racesGetter in raceList)
+            //make all headparts playable or genderless if the setting is enabled
+            var noGender = HeadPart.Flag.Female | HeadPart.Flag.Male;
+            foreach (var headpartsGetter in headpartsList)
             {
-                if (racesGetter.Flags.HasFlag(Race.Flag.Playable))
+                var addToPatch = true;
+                // exclude child races if the enable all headparts all races option is enabled
+                if (Settings.Value.enableAllHeadPartsAllRaces)
                 {
-                    // if beast races are included, just add the playable race to the list of races that share headparts
-                    if (Settings.Value.includeBeastRaces)
+
+                    // exclude headparts with child in editor id
+                    if (headpartsGetter.EditorID != null)
                     {
-                        playableRaces.Add(racesGetter.FormKey);
-                        newFormlist.Items.Add(racesGetter);
+                        if (headpartsGetter.EditorID.ToString().ToLower().Contains("child")) continue;
                     }
-                    //if the beast races are excluded and the race record isn't a beast race, add it to the list of races that share headparts
-                    else if (!beastRaces.Contains(racesGetter.FormKey))
-                    {
-                        playableRaces.Add(racesGetter.FormKey);
-                        newFormlist.Items.Add(racesGetter);
-                    }
-                }
-            }
-            foreach (var racesGetter in raceList)
-            {
-                // since vampires aren't playable but have morph races (and custom races might use morph races too) we need to add them to the list of races that share headparts, because the player can be a vampire
-                // this gets each race record, checks if it has a morphrace, and if so, checks if that morph race is one of the playable races, and if it is, it adds it to the list of races that share headparts
-                if (racesGetter.MorphRace != null && playableRaces.Contains(racesGetter.MorphRace.FormKey))
-                {
-                    newFormlist.Items.Add(racesGetter);
-                }
-            }
-            foreach (var headpartsGetter in state.LoadOrder.PriorityOrder.HeadPart().WinningOverrides())
-            {
-                if (!Settings.Value.includeBeastRaces)
-                {
-                    //if beast races are excluded, we need to check each headparts' validraces formlist to see if a beastrace is on it and exclude that headpart from being edited
+                    // exclude headparts that have validraces set to the child headparts list
+                    if (headpartsGetter.ValidRaces.FormKey == childHeadParts) continue;
                     var validRacesFormList = headpartsGetter.ValidRaces.TryResolve(state.LinkCache);
-                    bool isInvalid = false;
+                    if (validRacesFormList == null) continue;
+
+
+                    //exclude headparts that have any races in their valid races that have child in their editor id
+                    foreach (var link in validRacesFormList.EnumerateFormLinks())
+                    {
+                        var sublink = link.FormKey.ToLink<Race>().TryResolve(state.LinkCache);
+                        if (sublink == null) continue;
+                        if (sublink.EditorID == null) continue;
+                        if (sublink.EditorID.ToString().ToLower().Contains("child"))
+                        {
+                            addToPatch = false;
+                        }
+                    }
+                }
+                if (addToPatch)
+                {
+                    if (Settings.Value.makeHeadPartsPlayable)
+                    {
+                        if (!headpartsGetter.Flags.HasFlag(HeadPart.Flag.Playable))
+                        {
+                            state.PatchMod.HeadParts.GetOrAddAsOverride(headpartsGetter).Flags |= HeadPart.Flag.Playable;
+                        }
+                    }
+                    if (Settings.Value.makeHeadPartsGenderless)
+                    {
+                        if (headpartsGetter.Flags.HasFlag(HeadPart.Flag.Male) || headpartsGetter.Flags.HasFlag(HeadPart.Flag.Female))
+                        {
+                            state.PatchMod.HeadParts.GetOrAddAsOverride(headpartsGetter).Flags &= ~noGender;
+                        }
+                    }
+                }
+            }
+
+            if (Settings.Value.enableAllHeadPartsAllRaces)
+            {
+                // create formList to hold all the races that will share headparts
+                var newFormlist = state.PatchMod.FormLists.AddNew();
+                newFormlist.EditorID = "synthesisHeadPartsAllRaces";
+
+                // list of all playable races
+                List<FormKey> playableRaces = new();
+
+                // list of all beast races
+                List<FormKey> beastRaces = new() { FormKey.Factory("013740:Skyrim.esm"), FormKey.Factory("013745:Skyrim.esm"), FormKey.Factory("08883A:Skyrim.esm"), FormKey.Factory("088845:Skyrim.esm") };
+
+                // list of races added to formlist
+                List<FormKey> usingRaces = new();
+
+                foreach (var racesGetter in raceList)
+                {
+                    if (racesGetter.Flags.HasFlag(Race.Flag.Playable))
+                    {
+                        // if beast races are included, just add the playable race to the list of races that share headparts
+                        if (Settings.Value.includeBeastRaces)
+                        {
+                            playableRaces.Add(racesGetter.FormKey);
+                            newFormlist.Items.Add(racesGetter);
+                            usingRaces.Add(racesGetter.FormKey);
+                        }
+                        //if the beast races are excluded and the race record isn't a beast race, add it to the list of races that share headparts
+                        else if (!beastRaces.Contains(racesGetter.FormKey))
+                        {
+                            playableRaces.Add(racesGetter.FormKey);
+                            newFormlist.Items.Add(racesGetter);
+                            usingRaces.Add(racesGetter.FormKey);
+                        }
+                    }
+                }
+                foreach (var racesGetter in raceList)
+                {
+                    // since vampires aren't playable but have morph races (and custom races might use morph races too) we need to add them to the list of races that share headparts, because the player can be a vampire
+                    // this gets each race record, checks if it has a morphrace, and if so, checks if that morph race is one of the playable races, and if it is, it adds it to the list of races that share headparts
+                    if (racesGetter.MorphRace != null && playableRaces.Contains(racesGetter.MorphRace.FormKey))
+                    {
+                        newFormlist.Items.Add(racesGetter);
+                        usingRaces.Add(racesGetter.FormKey);
+                    }
+                }
+                foreach (var headpartsGetter in headpartsList)
+                {
+                    var validRacesFormList = headpartsGetter.ValidRaces.TryResolve(state.LinkCache);
+                    var addToPatch = false;
+                    if (headpartsGetter.ValidRaces.FormKey == childHeadParts) continue;
+
                     if (validRacesFormList != null)
                     {
                         foreach (var link in validRacesFormList.EnumerateFormLinks())
                         {
-                            //loops through each race in the validraces formlist of a headpart record
-                            if (beastRaces.Contains(link.FormKey))
+                            if (usingRaces.Contains(link.FormKey))
                             {
-                                //if ANY of the races are a beast race then the headpart's validraces is marked invalid so that it isn't edited
-                                isInvalid = true;
+                                addToPatch = true;
                             }
                         }
-                        if (isInvalid == false)
+                        if (addToPatch == true)
                         {
                             state.PatchMod.HeadParts.GetOrAddAsOverride(headpartsGetter).ValidRaces.SetTo(newFormlist);
                         }
                     }
-                }
-                else
-                {
-                    state.PatchMod.HeadParts.GetOrAddAsOverride(headpartsGetter).ValidRaces.SetTo(newFormlist);
                 }
             }
         }
